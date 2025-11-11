@@ -1,0 +1,5 @@
+# Required packages for optimized converter
+ijson>=3.2.0        # Streaming JSON parser for large files
+orjson>=3.9.0       # Fast JSON library (3-5x faster than stdlib)
+pyarrow>=14.0.0     # Apache Arrow for fast columnar data format (3-10x faster writes)
+pandas>=2.0.0       # Data manipulation library (required for Arrow to DataFrame conversion)

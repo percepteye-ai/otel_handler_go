@@ -19,8 +19,9 @@ coverage.html
 *.arrow
 *.json
 
-# Output directory
+# Output directories
 outputs/
+otlp_outputs/
 
 # Dependency directories
 vendor/
@@ -68,3 +69,17 @@ nohup.out
 *.temp
 *.bak
 *.backup
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+python/venv/
+python/env/
+python/.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
