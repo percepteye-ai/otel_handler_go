@@ -23,6 +23,9 @@ coverage.html
 outputs/
 otlp_outputs/
 
+# Python (no longer used - direct JSON generation)
+python/
+
 # Dependency directories
 vendor/
 

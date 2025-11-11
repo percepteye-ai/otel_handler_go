@@ -18,6 +18,7 @@ type Config struct {
 	NumWorkers     int
 	BatchSize      int
 	WriteInterval  int
+	OutputFormat   string // "arrow" or "json" or "both"
 }
 
 type BadgerExport struct {
@@ -146,11 +147,18 @@ func main() {
 	fmt.Printf("  Batch files: %d\n", converter.BatchCount())
 	fmt.Println("=" + string(make([]byte, 78)) + "=")
 	fmt.Println()
-	fmt.Printf("Output: %s.batch_NNNN.arrow\n", config.OutputFile)
-	fmt.Println()
-	fmt.Println("Use Python to read:")
-	fmt.Println("  from load_arrow_traces import load_otlp_spans_from_arrow")
-	fmt.Println("  spans = load_otlp_spans_from_arrow('output.batch_0000.arrow')")
+	switch config.OutputFormat {
+	case "json":
+		fmt.Printf("Output: %s.batch_NNNN.otlp.json\n", config.OutputFile)
+	case "both":
+		fmt.Printf("Output: %s.batch_NNNN.arrow and %s.batch_NNNN.otlp.json\n", config.OutputFile, config.OutputFile)
+	default:
+		fmt.Printf("Output: %s.batch_NNNN.arrow\n", config.OutputFile)
+		fmt.Println()
+		fmt.Println("Use Python to read:")
+		fmt.Println("  from load_arrow_traces import load_otlp_spans_from_arrow")
+		fmt.Println("  spans = load_otlp_spans_from_arrow('output.batch_0000.arrow')")
+	}
 }
 
 func parseFlags() *Config {
@@ -158,6 +166,7 @@ func parseFlags() *Config {
 
 	flag.StringVar(&config.InputFile, "input", "badger_export.json", "Input BadgerDB export file")
 	flag.StringVar(&config.OutputFile, "output", "traces_otlp", "Output base filename")
+	flag.StringVar(&config.OutputFormat, "format", "arrow", "Output format: arrow, json, or both")
 	flag.IntVar(&config.MaxEntries, "max", 0, "Max entries to process (0 = all)")
 	flag.IntVar(&config.NumWorkers, "workers", runtime.NumCPU(), "Number of workers")
 	flag.IntVar(&config.BatchSize, "batch", 200000, "Batch size for processing")

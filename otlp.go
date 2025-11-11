@@ -12,6 +12,15 @@ type OTLPSpan struct {
 	Attributes        []Attribute `json:"attributes"`
 	Events            []Event     `json:"events"`
 	Status            Status      `json:"status"`
+	TraceFlags        string      `json:"traceFlags,omitempty"`
+	Links             []Link      `json:"links,omitempty"`
+}
+
+// Link represents an OTLP link (for distributed tracing)
+type Link struct {
+	TraceID    string      `json:"traceId"`
+	SpanID     string      `json:"spanId"`
+	Attributes []Attribute `json:"attributes,omitempty"`
 }
 
 // Attribute represents an OTLP attribute (key-value pair)
@@ -40,4 +49,25 @@ type Event struct {
 type Status struct {
 	Code    string `json:"code"`
 	Message string `json:"message,omitempty"`
+}
+
+// ResourceSpans represents OTLP ResourceSpans structure
+type ResourceSpans struct {
+	Resource   Resource    `json:"resource"`
+	ScopeSpans []ScopeSpans `json:"scopeSpans"`
+}
+
+// Resource represents OTLP Resource
+type Resource struct {
+	Attributes []Attribute `json:"attributes"`
+}
+
+// ScopeSpans represents OTLP ScopeSpans
+type ScopeSpans struct {
+	Spans []*OTLPSpan `json:"spans"`
+}
+
+// OTLPExport represents the top-level OTLP export structure
+type OTLPExport struct {
+	ResourceSpans []ResourceSpans `json:"resourceSpans"`
 }

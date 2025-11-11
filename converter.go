@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -80,16 +81,29 @@ func (c *Converter) convertJaegerToOTLP(jaegerSpan *jaeger.Span) *OTLPSpan {
 		Status: Status{
 			Code: "STATUS_CODE_UNSET",
 		},
+		TraceFlags: fmt.Sprintf("%02x", uint8(jaegerSpan.Flags)),
+		Links:      make([]Link, 0),
 	}
 
-	// Set parent span ID if exists
+	// Process references (parent span and links)
 	if len(jaegerSpan.References) > 0 {
 		for _, ref := range jaegerSpan.References {
+			refTraceIDBytes := make([]byte, 16)
+			refSpanIDBytes := make([]byte, 8)
+			ref.TraceID.MarshalTo(refTraceIDBytes)
+			ref.SpanID.MarshalTo(refSpanIDBytes)
+			
 			if ref.RefType == jaeger.SpanRefType_CHILD_OF {
-				parentSpanIDBytes := make([]byte, 8)
-				ref.SpanID.MarshalTo(parentSpanIDBytes)
-				otlp.ParentSpanID = hex.EncodeToString(parentSpanIDBytes)
-				break
+				// Set as parent span ID
+				otlp.ParentSpanID = hex.EncodeToString(refSpanIDBytes)
+			} else {
+				// Add as link (FOLLOWS_FROM, etc.)
+				link := Link{
+					TraceID:    hex.EncodeToString(refTraceIDBytes),
+					SpanID:     hex.EncodeToString(refSpanIDBytes),
+					Attributes: make([]Attribute, 0),
+				}
+				otlp.Links = append(otlp.Links, link)
 			}
 		}
 	}
@@ -111,10 +125,32 @@ func (c *Converter) convertJaegerToOTLP(jaegerSpan *jaeger.Span) *OTLPSpan {
 				otlp.Kind = "SPAN_KIND_CONSUMER"
 			}
 		}
+
+		// Check for error tags and set status
+		if tag.Key == "error" {
+			if tag.VBool || tag.VStr == "true" {
+				otlp.Status.Code = "STATUS_CODE_ERROR"
+			}
+		} else if tag.Key == "error.message" {
+			otlp.Status.Message = tag.VStr
+			otlp.Status.Code = "STATUS_CODE_ERROR"
+		} else if tag.Key == "error.type" && otlp.Status.Code == "STATUS_CODE_UNSET" {
+			// If error.type exists, mark as error
+			otlp.Status.Code = "STATUS_CODE_ERROR"
+		}
 	}
 
 	// Convert process tags to attributes
 	if jaegerSpan.Process != nil {
+		// Add service.name from Process.ServiceName (most important)
+		if jaegerSpan.Process.ServiceName != "" {
+			otlp.Attributes = append(otlp.Attributes, Attribute{
+				Key: "service.name",
+				Value: AttributeValue{StringValue: jaegerSpan.Process.ServiceName},
+			})
+		}
+		
+		// Add other process tags as attributes
 		for _, tag := range jaegerSpan.Process.Tags {
 			attr := c.convertTag(tag)
 			otlp.Attributes = append(otlp.Attributes, attr)
@@ -211,7 +247,7 @@ func (c *Converter) flushTraces() {
 	case c.writeChan <- tracesCopy:
 	default:
 		// If channel full, write synchronously
-		c.writeToArrow(tracesCopy)
+		c.writeOutput(tracesCopy)
 	}
 }
 
@@ -219,16 +255,11 @@ func (c *Converter) BackgroundWriter(done chan<- struct{}) {
 	defer close(done)
 
 	for traces := range c.writeChan {
-		c.writeToArrow(traces)
+		c.writeOutput(traces)
 	}
 }
 
-func (c *Converter) writeToArrow(traces map[string][]*OTLPSpan) {
-	c.statsLock.Lock()
-	batchNum := c.batchCount
-	c.batchCount++
-	c.statsLock.Unlock()
-
+func (c *Converter) writeToArrow(traces map[string][]*OTLPSpan, batchNum int) {
 	filename := fmt.Sprintf("%s.batch_%04d.arrow", c.config.OutputFile, batchNum)
 
 	// Convert traces to rows for Arrow
@@ -276,6 +307,97 @@ func (c *Converter) writeToArrow(traces map[string][]*OTLPSpan) {
 	c.statsLock.Unlock()
 
 	fmt.Printf("Wrote %d spans to %s\n", spanCount, filename)
+}
+
+// writeOutput writes traces in the configured format(s)
+func (c *Converter) writeOutput(traces map[string][]*OTLPSpan) {
+	c.statsLock.Lock()
+	batchNum := c.batchCount
+	c.batchCount++
+	c.statsLock.Unlock()
+
+	switch c.config.OutputFormat {
+	case "json":
+		c.writeToOTLPJSON(traces, batchNum)
+	case "both":
+		c.writeToArrow(traces, batchNum)
+		c.writeToOTLPJSON(traces, batchNum)
+	default: // "arrow"
+		c.writeToArrow(traces, batchNum)
+	}
+}
+
+// writeToOTLPJSON writes traces directly to OTLP JSON format
+func (c *Converter) writeToOTLPJSON(traces map[string][]*OTLPSpan, batchNum int) {
+
+	filename := fmt.Sprintf("%s.batch_%04d.otlp.json", c.config.OutputFile, batchNum)
+
+	// Group spans by service name
+	serviceGroups := make(map[string][]*OTLPSpan)
+	spanCount := 0
+
+	for _, spans := range traces {
+		for _, span := range spans {
+			// Extract service name from attributes
+			serviceName := "unknown"
+			for _, attr := range span.Attributes {
+				if attr.Key == "service.name" {
+					serviceName = attr.Value.StringValue
+					break
+				}
+			}
+			serviceGroups[serviceName] = append(serviceGroups[serviceName], span)
+			spanCount++
+		}
+	}
+
+	// Build OTLP ResourceSpans structure
+	resourceSpansList := make([]ResourceSpans, 0)
+
+	for serviceName, spans := range serviceGroups {
+		resourceSpan := ResourceSpans{
+			Resource: Resource{
+				Attributes: []Attribute{
+					{
+						Key:   "service.name",
+						Value: AttributeValue{StringValue: serviceName},
+					},
+				},
+			},
+			ScopeSpans: []ScopeSpans{
+				{
+					Spans: spans,
+				},
+			},
+		}
+		resourceSpansList = append(resourceSpansList, resourceSpan)
+	}
+
+	// Create OTLP export structure
+	otlpExport := OTLPExport{
+		ResourceSpans: resourceSpansList,
+	}
+
+	// Write JSON file
+	file, err := os.Create(filename)
+	if err != nil {
+		fmt.Printf("Error creating OTLP JSON file: %v\n", err)
+		return
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(otlpExport); err != nil {
+		fmt.Printf("Error writing OTLP JSON file: %v\n", err)
+		return
+	}
+
+	c.statsLock.Lock()
+	c.totalSpans += spanCount
+	c.statsLock.Unlock()
+
+	fmt.Printf("Wrote %d spans to %s (%d resource spans)\n", spanCount, filename, len(resourceSpansList))
 }
 
 func (c *Converter) Shutdown() {
