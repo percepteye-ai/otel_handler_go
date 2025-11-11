@@ -19,6 +19,9 @@ coverage.html
 *.arrow
 *.json
 
+# Output directory
+outputs/
+
 # Dependency directories
 vendor/
 
