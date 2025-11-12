@@ -43,6 +43,16 @@ func (c *Converter) Worker(entryChan <-chan BadgerEntry, resultChan chan<- *OTLP
 	}
 }
 
+// isZeroID checks if a byte array contains all zeros
+func isZeroID(idBytes []byte) bool {
+	for _, b := range idBytes {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Converter) parseEntry(entry BadgerEntry) *OTLPSpan {
 	// Decode hex value
 	valueBytes, err := hex.DecodeString(entry.Value)
@@ -53,6 +63,17 @@ func (c *Converter) parseEntry(entry BadgerEntry) *OTLPSpan {
 	// Parse Jaeger protobuf span
 	var jaegerSpan jaeger.Span
 	if err := proto.Unmarshal(valueBytes, &jaegerSpan); err != nil {
+		return nil
+	}
+
+	// Validate TraceID and SpanID are not zero before conversion
+	traceIDBytes := make([]byte, 16)
+	spanIDBytes := make([]byte, 8)
+	jaegerSpan.TraceID.MarshalTo(traceIDBytes)
+	jaegerSpan.SpanID.MarshalTo(spanIDBytes)
+
+	if isZeroID(traceIDBytes) || isZeroID(spanIDBytes) {
+		// Skip invalid spans with zero IDs
 		return nil
 	}
 
@@ -68,6 +89,11 @@ func (c *Converter) convertJaegerToOTLP(jaegerSpan *jaeger.Span) *OTLPSpan {
 
 	jaegerSpan.TraceID.MarshalTo(traceIDBytes)
 	jaegerSpan.SpanID.MarshalTo(spanIDBytes)
+
+	// Validate IDs are not zero (should have been checked in parseEntry, but double-check here)
+	if isZeroID(traceIDBytes) || isZeroID(spanIDBytes) {
+		return nil
+	}
 
 	otlp := &OTLPSpan{
 		TraceID:           hex.EncodeToString(traceIDBytes),
@@ -141,6 +167,7 @@ func (c *Converter) convertJaegerToOTLP(jaegerSpan *jaeger.Span) *OTLPSpan {
 	}
 
 	// Convert process tags to attributes
+	serviceNameFound := false
 	if jaegerSpan.Process != nil {
 		// Add service.name from Process.ServiceName (most important)
 		if jaegerSpan.Process.ServiceName != "" {
@@ -148,13 +175,26 @@ func (c *Converter) convertJaegerToOTLP(jaegerSpan *jaeger.Span) *OTLPSpan {
 				Key: "service.name",
 				Value: AttributeValue{StringValue: jaegerSpan.Process.ServiceName},
 			})
+			serviceNameFound = true
 		}
 		
 		// Add other process tags as attributes
 		for _, tag := range jaegerSpan.Process.Tags {
 			attr := c.convertTag(tag)
 			otlp.Attributes = append(otlp.Attributes, attr)
+			// Check if service.name was already in process tags
+			if tag.Key == "service.name" {
+				serviceNameFound = true
+			}
 		}
+	}
+
+	// Ensure service.name is always present (fallback to "unknown" if not found)
+	if !serviceNameFound {
+		otlp.Attributes = append(otlp.Attributes, Attribute{
+			Key: "service.name",
+			Value: AttributeValue{StringValue: "unknown"},
+		})
 	}
 
 	// Convert logs to events

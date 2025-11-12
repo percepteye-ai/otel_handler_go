@@ -170,7 +170,7 @@ func parseFlags() *Config {
 	flag.IntVar(&config.MaxEntries, "max", 0, "Max entries to process (0 = all)")
 	flag.IntVar(&config.NumWorkers, "workers", runtime.NumCPU(), "Number of workers")
 	flag.IntVar(&config.BatchSize, "batch", 200000, "Batch size for processing")
-	flag.IntVar(&config.WriteInterval, "write-interval", 200000, "Write to disk every N spans")
+	flag.IntVar(&config.WriteInterval, "write-interval", 2000000, "Write to disk every N spans (default: 2M spans per file)")
 
 	flag.Parse()
 
